@@ -47,17 +47,35 @@ def test_contraction_prose_does_not_hide_active_reference(text):
         ('read @"my file.txt" done', None),
         ("@'unfinished", "unfinished"),
         ('@"my file.txt', "my file.txt"),
+        ('@dir/"my fi', "dir/my fi"),
+        ("@dir/'my fi", "dir/my fi"),
     ],
 )
 def test_quotes_still_group_attachment_tokens(text, expected):
-    # Word-boundary quotes keep grouping spaces (filenames with spaces), and
-    # a closed quote still ends completion so later prose is not replaced.
+    # Word-boundary quotes keep grouping spaces (filenames with spaces), a
+    # closed quote still ends completion so later prose is not replaced, and
+    # a quote inside an active path keeps shell-style grouping.
     result = active_reference(text)
     if expected is None:
         assert result is None
     else:
         assert result is not None
         assert result[0] == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '@dir/"my fi',
+        "@dir/'my fi",
+    ],
+)
+def test_partial_quote_inside_path_replaces_whole_raw_path(text):
+    # Issue #915 follow-up: the quote in an active attachment path must open
+    # quote state, so `@dir/"my fi` still resolves to `dir/my fi` (raw length
+    # 10) instead of the quote being treated as prose and the space advancing
+    # the token boundary past the attachment.
+    assert active_reference(text) == ("dir/my fi", 10)
 
 
 @pytest.mark.parametrize("raw", ['@"space fi', "@'space fi", r"@space\ fi"])
@@ -70,6 +88,23 @@ def test_quoted_completion_replaces_entire_raw_path(raw, monkeypatch, tmp_path):
     result = list(FilePathCompleter().get_completions(Document(raw, len(raw)), None))[0]
     inserted = raw[: len(raw) + result.start_position] + result.text
     assert shlex.split(inserted) == ["@space file.py"]
+
+
+@pytest.mark.parametrize("raw", ['@dir/"my fi', "@dir/'my fi"])
+def test_partial_quote_inside_path_completes(raw, monkeypatch, tmp_path):
+    # Windows-compatible path whose name contains a space, quoted partway
+    # through: the completer must keep offering candidates from the active
+    # attachment and replace the entire raw path on insertion.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "dir").mkdir()
+    (tmp_path / "dir" / "my file.txt").touch()
+    monkeypatch.setattr(fi, "reindex", lambda *a, **kw: None)
+    monkeypatch.setattr(fi, "get_index", lambda: fi._make_index(str(tmp_path), []))
+    results = list(FilePathCompleter().get_completions(Document(raw, len(raw)), None))
+    assert results
+    result = results[0]
+    inserted = raw[: len(raw) + result.start_position] + result.text
+    assert shlex.split(inserted) == ["@dir/my file.txt"]
 
 
 def test_wrong_root_never_used(monkeypatch, tmp_path):
